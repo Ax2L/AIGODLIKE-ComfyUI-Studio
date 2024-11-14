@@ -657,6 +657,16 @@ def path_to_url(path):
     if not path:
         return path
     path = path.replace("\\", "/")
+
+    # New code to handle paths
+    if "ComfyUI/models" in path:
+        # Extract the path starting from custom_nodes
+        path = path[path.find("models"):]
+
+    if "Models/Lora" in path:
+        # Extract the path starting from custom_nodes
+        path = path[path.find("Models"):]
+
     if not path.startswith("/"):
         path = "/" + path
     while path.startswith("//"):
