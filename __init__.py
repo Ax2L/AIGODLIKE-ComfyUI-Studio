@@ -1,6 +1,7 @@
 import json
 import sys
 from os import PathLike
+from hashlib import md5
 from aiohttp.web_urldispatcher import AbstractRoute, UrlDispatcher
 import server
 import time
@@ -210,6 +211,46 @@ class ModelManager:
         return Path("XXXXX")
 
 
+class ThumbnailManager:
+    _code_map = {}
+    _path_code_map = {}
+    _image_map = {}
+    _image_time = {}
+
+    @classmethod
+    def add_code(cls, path: str):
+        if path not in cls._image_map:
+            code = md5(path.encode()).hexdigest()
+            cls._code_map[code] = path
+            cls._path_code_map[path] = code
+        return cls._path_code_map.get(path, "")
+
+    @classmethod
+    def get_path(cls, code: str) -> str:
+        return cls._code_map.get(code, "")
+
+    @classmethod
+    def add_image(cls, path: str):
+        p = Path(path)
+        if path in cls._image_map and p.stat().st_mtime == cls._image_time.get(path, 0):
+            return
+        if not p.is_file():
+            cls._image_map[path] = b""
+            return
+        cls._image_time[path] = p.stat().st_mtime
+        cls._image_map[path] = b"" if not p.exists() else p.read_bytes()
+
+    @classmethod
+    def get_image(cls, path: str) -> bytes:
+        cls.add_image(path)
+        return cls._image_map.get(path, b"")
+
+    @classmethod
+    def get_image_by_code(cls, code: str) -> bytes:
+        path = cls.get_path(code)
+        return cls.get_image(path)
+
+
 @server.PromptServer.instance.routes.post("/cs/upload_thumbnail")
 async def upload_thumbnail(request: web.Request):
     post = await request.post()
@@ -386,7 +427,7 @@ async def fetch_config(request: web.Request):
         mcfg["size"] = model_path.stat().st_size / 1024**2  # MB
         mcfg["creationTime"] = model_path.stat().st_ctime * 1000
         mcfg["modifyTime"] = model_path.stat().st_mtime * 1000
-    ret_model_map = deepcopy(ret_model_map)
+    ret_model_map: dict[str, dict] = deepcopy(ret_model_map)
     # model_paths = ModelManager.get_paths(mtype)
     for mcfg in ret_model_map.values():
         # 遍历model_paths 对比 model_path 得到 减去 model_paths 的相对路径
@@ -400,16 +441,27 @@ async def fetch_config(request: web.Request):
             mcfg["workflows"] = workflows
         dir_tags = find_tags(name)
         if dir_tags:
+            if "tags" not in mcfg:
+                mcfg["tags"] = []
             mcfg["tags"].extend(dir_tags)
             mcfg["dir_tags"] = dir_tags
-        mcfg["cover"] = urllib.parse.quote(path_to_url(mcfg["cover"]))
+        # mcfg["cover"] = urllib.parse.quote(path_to_url(mcfg["cover"]))
         if not mcfg["cover"]:
             continue
-        mcfg["cover"] += f"?t={time.time()}"
+        code = ThumbnailManager.add_code(mcfg["cover"])
+        mcfg["cover"] = f"/cs/fetch_image?code={code}"
     if CFG_MANAGER.dirty:
         CFG_MANAGER.dump_config()
     json_data = json.dumps(ret_model_map)
     return web.Response(status=200, body=json_data)
+
+
+@server.PromptServer.instance.routes.get("/cs/fetch_image")
+async def fetch_image(request: web.Request):
+    # 调用方式 http://127.0.0.1:8188/cs/fetch_image?code=xxxx.png
+    code = request.query.get("code")
+    image_bytes = ThumbnailManager.get_image_by_code(code)
+    return web.Response(status=200, body=image_bytes)
 
 
 @server.PromptServer.instance.routes.post("/cs/update_filter")
@@ -784,13 +836,13 @@ def add_static_resource(prefix, path, pprefix=MOUNT_ROOT, limit=False):
 
 
 def init():
-    modelpath_map = ModelManager.model_path_dict()
-    for mtype in modelpath_map:
-        for path in modelpath_map[mtype][0]:
-            if not Path(path).exists():
-                continue
-            add_static_resource(path, path, "", limit=True)
-    add_static_resource("", CUR_PATH.as_posix())
+    # modelpath_map = ModelManager.model_path_dict()
+    # for mtype in modelpath_map:
+    #     for path in modelpath_map[mtype][0]:
+    #         if not Path(path).exists():
+    #             continue
+    #         add_static_resource(path, path, "", limit=True)
+    add_static_resource("", CUR_PATH.joinpath("loader").as_posix(), pprefix="/cs/loader")
 
 
 init()
